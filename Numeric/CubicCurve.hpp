@@ -17,7 +17,7 @@ namespace Numeric {
 */
 struct CubicCurve {
 	CubicCurve(const float c1x, const float c1y, const float c2x, const float c2y) :
-		c1_(c1x, c1y), c2_(c2x, c2y)
+		c1_{c1x, c1y}, c2_{c2x, c2y}
 	{
 		assert(0.0f <= c1x);	assert(c1x <= 1.0f);
 		assert(0.0f <= c1y);	assert(c1y <= 1.0f);

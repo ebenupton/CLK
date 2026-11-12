@@ -100,7 +100,7 @@ uint8_t VideoOutput::perform(const int h_count, const int v_count) {
 	// Copy byte_addr back into row_addr if a new character row has begun.
 	if(hsync_int_) {
 		if(last_line()) {
-			row_addr_ = byte_addr_;
+			row_addr_ = row_register_14_6 ? (byte_addr_ & 0x7fc0) : byte_addr_;
 		} else {
 			byte_addr_ = row_addr_;
 		}
@@ -147,6 +147,39 @@ uint8_t VideoOutput::perform(const int h_count, const int v_count) {
 		}
 	}
 	output_length_ += 8;
+	if(capture && v_count < 313) {
+		const int slot = h_count >> 3;
+		capture->mode[v_count][slot] = uint8_t(mode_);
+		capture->addr[v_count][slot] = 0xffff;
+		if(output_ != OutputStage::Pixels || (mode_40_ && !(h_count & 8))) {
+			for(int i = 0; i < 8; i++) capture->pix[v_count][h_count + i] = 0;
+		}
+		if(output_ == OutputStage::Pixels && (!mode_40_ || (h_count & 8))) {
+			const uint16_t a = uint16_t(byte_addr_ | char_row_);
+			const uint8_t d = ram_[a];
+			capture->addr[v_count][slot] = a;
+			uint8_t *px = &capture->pix[v_count][mode_40_ ? h_count - 8 : h_count];
+			const int width = mode_40_ ? 16 : 8;
+			switch(mode_bpp_) {
+				case Bpp::One:
+					for(int i = 0; i < 8; i++)
+						for(int j = 0; j < width / 8; j++) px[i * width / 8 + j] = mapped_palette_[((d << i) >> 4) & 8];
+				break;
+				case Bpp::Two:
+					for(int i = 0; i < 4; i++) {
+						const uint8_t idx = uint8_t((((d << i) >> 4) & 8) | (((d << i) >> 2) & 2));
+						for(int j = 0; j < width / 4; j++) px[i * width / 4 + j] = mapped_palette_[idx];
+					}
+				break;
+				case Bpp::Four:
+					for(int i = 0; i < 2; i++) {
+						const uint8_t idx = uint8_t((((d << i) >> 4) & 8) | (((d << i) >> 3) & 4) | (((d << i) >> 2) & 2) | (((d << i) >> 1) & 1));
+						for(int j = 0; j < width / 2; j++) px[i * width / 2 + j] = mapped_palette_[idx];
+					}
+				break;
+			}
+		}
+	}
 	if(output_ == OutputStage::Pixels && (!mode_40_ || h_count & 8) && current_output_target_) {
 		const uint8_t data = ram_[byte_addr_ | char_row_];
 
@@ -199,13 +232,15 @@ uint8_t VideoOutput::perform(const int h_count, const int v_count) {
 			byte_addr_ += 8;
 
 			if(!(byte_addr_ & 0b0111'1000'0000'0000)) {
-				byte_addr_ = mode_base_ | (byte_addr_ & 0x0000'0111'1111'1111);
+				byte_addr_ = mode_base_ | (byte_addr_ & 0b0000'0111'1111'1111);	// was a hex literal (elk-headless)
 			}
 		}
 	}
 
 	// Test for interrupts.
-	if(v_count == v_rtc && ((!field_ && !h_count) || (field_ && h_count == h_half))) {
+	// RTC per the real-chip logic-analyser captures in ElectronFpga/timings (elk-headless):
+	// about 15 ticks earlier than the FPGA/JamSoft h=0 and h=512.
+	if((!field_ && v_count == v_rtc - 1 && h_count == 1008) || (field_ && v_count == v_rtc && h_count == h_half - 16)) {
 		interrupts |= static_cast<uint8_t>(Interrupt::RealTimeClock);
 	}
 	if(h_count == hsync_start && ((v_count == v_disp_gph && !mode_text_) or (v_count == v_disp_txt && mode_text_))) {
@@ -228,6 +263,12 @@ uint8_t VideoOutput::run_for(const Cycles cycles) {
 			h_count_ = 0;
 
 			if(is_v_end()) {
+				if(capture && completed) {
+					capture->field = field_;
+					*completed = *capture;
+					capture->io.clear();
+				}
+				++fields_completed;
 				v_count_ = 0;
 				field_ = !field_;
 			} else {
@@ -240,32 +281,19 @@ uint8_t VideoOutput::run_for(const Cycles cycles) {
 }
 
 std::pair<Cycles, uint8_t> VideoOutput::run_until_ram_slot() {
-	if(mode_40_) {
-		return run_until_io_slot();
+	// Every RAM access is a 1MHz access, stopped and released exactly like IO
+	// (FPGA/JamSoft clk_stopped: stop at clken_counter(2..0)=110, release at 1110).
+	auto result = run_until_io_slot();		// now h_count_ & 15 == 8
+
+	// In modes 0-3 the release is refused while the line's fetch is active; the
+	// release test 2 ticks before this slot lies in the same 8-tick block as
+	// h_count_ - 8, which is in the fetch iff !in_blank() at h_count_ (<= 632).
+	if(!mode_40_ && !in_blank()) {
+		const auto additional = Cycles((h_active + 8 - h_count_) >> 3);	// to h = 648
+		result.first += additional;
+		result.second |= run_for(additional);
 	}
-
-	Cycles duration{};
-	uint8_t interrupts{};
-
-	// If currently in the back half of a cycle,
-	// advance to the start of the next 1Mhz window.
-	if(h_count_ & 8) {
-		duration += Cycles(1);
-		interrupts |= run_for(Cycles(1));
-	}
-
-	// If now in blank, just finish out the half window.
-	// Otherwise let the pixel run end.
-	if(!in_blank()) {
-		const auto additional = Cycles(1 + ((h_active - h_count_) >> 3));
-		duration += additional;
-		interrupts |= run_for(additional);
-	} else {
-		duration += Cycles(1);
-		interrupts |= run_for(Cycles(1));
-	}
-
-	return std::make_pair(duration, interrupts);
+	return result;
 }
 
 std::pair<Cycles, uint8_t> VideoOutput::run_until_io_slot() {
@@ -292,6 +320,7 @@ void VideoOutput::write(const int address, const uint8_t value) {
 		break;
 		case 0x07: {
 			const uint8_t mode = (value >> 3) & 7;
+			mode_ = mode;
 			mode_40_ = mode >= 4;
 			mode_text_ = mode == 3 || mode == 6;
 

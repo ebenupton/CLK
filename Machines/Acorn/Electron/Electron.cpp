@@ -224,7 +224,8 @@ public:
 			return video_.run_until_ram_slot();
 		}
 
-		if((address & 0xff00) == 0xfe00) {
+		// FRED, JIM, SHEILA, and the keyboard (ROM 8/9 paged) run at 1MHz (FPGA io_access).
+		if((address >= 0xfc00 && address < 0xff00) || (address < 0xc000 && keyboard_is_active_)) {
 			return video_.run_until_io_slot();
 		}
 
@@ -321,21 +322,13 @@ public:
 							if( interruptDisable&0x40 ) interrupt_status_ &= ~Interrupt::HighToneDetect;
 							evaluate_interrupts();
 
-							// TODO: NMI
-						} else {
-							// Latch the paged ROM in case external hardware is being emulated.
+						}
+						// The ULA latches the paging bits on every write (FPGA ElectronULA.vhd
+						// L823-833); while 8-11 is selected only values with bit 3 set are honoured.
+						if((active_rom_ & 0xc) != 0x8 || (*value & 0x08)) {
 							active_rom_ = *value & 0xf;
-
-							// apply the ULA's test
-							if(*value & 0x08) {
-								if(*value & 0x04) {
-									keyboard_is_active_ = false;
-									basic_is_active_ = false;
-								} else {
-									keyboard_is_active_ = !(*value & 0x02);
-									basic_is_active_ = !keyboard_is_active_;
-								}
-							}
+							keyboard_is_active_ = (active_rom_ & 0xe) == 0x8;
+							basic_is_active_ = (active_rom_ & 0xe) == 0xa;
 						}
 					}
 				break;
@@ -490,7 +483,7 @@ public:
 						if(is_read(operation)) {
 							*value = roms_[active_rom_][address & 16383];
 							if(keyboard_is_active_) {
-								*value &= 0xf0;
+								*value = 0x00;		// FPGA: "0000" & (kbd xor "1111")
 								for(int address_line = 0; address_line < 14; address_line++) {
 									if(!(address&(1 << address_line))) *value |= key_states_[address_line];
 								}
@@ -506,6 +499,12 @@ public:
 			}
 		}
 
+#ifdef CLK_HEADLESS
+		if((address & 0xff00) == 0xfe00 && video_.capture) {
+			video_.capture->io.push_back({uint16_t(video_.v_count_), uint16_t(video_.h_count_),
+				uint8_t(address), *value, !is_read(operation)});
+		}
+#endif
 		return cycles;
 	}
 
@@ -629,7 +628,11 @@ public:
 		}
 	}
 
+#ifdef CLK_HEADLESS
+public:	// the headless harness reads the machine's state
+#else
 private:
+#endif
 	enum class ROM {
 		Slot0 = 0,
 		Slot1,	Slot2,	Slot3,

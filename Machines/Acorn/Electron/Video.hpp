@@ -72,7 +72,31 @@ public:
 	*/
 	unsigned int get_cycles_until_next_ram_availability(const int from_time);
 
+	// Headless capture (elk-headless branch): one field of logical output.
+	// pix: palette index (RGB, 3 bits) per 1/16us pixel clock, 1024 per line;
+	// addr: the RAM address fetched in each 0.5us slot (0xffff: none);
+	// mode: the screen mode in force in each slot.
+	struct Capture {
+		uint8_t pix[313][1024];
+		uint16_t addr[313][128];
+		uint8_t mode[313][128];
+		int field = 0;
+		// Every CPU access to &FExx this field: raster position when it took effect.
+		struct Access { uint16_t v, h; uint8_t reg, value; bool write; };
+		std::vector<Access> io;
+	};
+	Capture *capture = nullptr;		// being written
+	Capture *completed = nullptr;	// last complete field, copied at frame end
+	int fields_completed = 0;
+	// The real ULA's start-of-row register holds only address bits 14..6 (hoglet,
+	// stardot t=20004); CLK as written keeps every bit.  Default: the hardware's.
+	static inline bool row_register_14_6 = true;
+
+#ifdef CLK_HEADLESS
+public:	// the headless harness reads the machine's state
+#else
 private:
+#endif
 	const uint8_t *const ram_ = nullptr;
 
 	// CRT output.
@@ -130,6 +154,7 @@ private:
 	uint16_t mode_base_ = 0;
 	bool mode_40_ = true;
 	bool mode_text_ = false;
+	int mode_ = 0;
 	enum class Bpp {
 		One = 1, Two = 2, Four = 4
 	} mode_bpp_ = Bpp::One;
