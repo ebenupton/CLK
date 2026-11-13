@@ -500,6 +500,9 @@ public:
 		}
 
 #ifdef CLK_HEADLESS
+		if(address >= 0x8000 && address < 0xc000) {
+			if(video_.v_count_ >= count_from_line) ++paged_accesses_late; else ++paged_accesses_early;
+		}
 		if((address & 0xff00) == 0xfe00 && video_.capture) {
 			video_.capture->io.push_back({uint16_t(video_.v_count_), uint16_t(video_.h_count_),
 				uint8_t(address), *value, !is_read(operation)});
@@ -775,6 +778,10 @@ private:
 
 	// Outputs
 	VideoOutput video_;
+#ifdef CLK_HEADLESS
+	long paged_accesses_early = 0, paged_accesses_late = 0;	// &8000-&BFFF bus cycles, by line
+	int count_from_line = 200;
+#endif
 
 	Concurrency::AsyncTaskQueue<false> audio_queue_;
 	SoundGenerator sound_generator_;
