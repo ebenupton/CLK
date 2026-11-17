@@ -84,6 +84,10 @@ public:
 		// Every CPU access to &FExx this field: raster position when it took effect.
 		struct Access { uint16_t v, h; uint8_t reg, value; bool write; };
 		std::vector<Access> io;
+		// Pad audit: fetch slots in a 40-column mode, inside the display, whose byte is not zero
+		// (either half of the microsecond: covers both the FPGA's and the real ULA's stepping).
+		uint8_t padl[313] = {}, padr[313] = {};	// per line: such slots at h < 320 / h >= 320
+		uint16_t pad_h[313] = {}, pad_a[313] = {}; uint8_t pad_d[313] = {};	// the line's first
 	};
 	Capture *capture = nullptr;		// being written
 	Capture *completed = nullptr;	// last complete field, copied at frame end
@@ -91,6 +95,9 @@ public:
 	// The real ULA's start-of-row register holds only address bits 14..6 (hoglet,
 	// stardot t=20004); CLK as written keeps every bit.  Default: the hardware's.
 	static inline bool row_register_14_6 = true;
+	// Real (Ferranti) ULA, from hardware probes: in the 40-column modes the address counter
+	// steps half a microsecond earlier than the FPGA/JamSoft model's (elk-headless).
+	static inline bool real_m5_phase = false;
 
 #ifdef CLK_HEADLESS
 public:	// the headless harness reads the machine's state

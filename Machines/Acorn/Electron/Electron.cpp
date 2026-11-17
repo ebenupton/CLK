@@ -259,9 +259,15 @@ public:
 		}
 
 		if(address < 0x8000) {
+#ifdef CLK_HEADLESS
+			if(ram_access_hook) ram_access_hook(address, !is_read(operation), operation == CPU::MOS6502::BusOperation::ReadOpcode, cycles.template as<int>());
+#endif
 			if(is_read(operation)) {
 				*value = ram_[address];
 			} else {
+#ifdef CLK_HEADLESS
+				if(ram_write_hook) ram_write_hook(address, *value);
+#endif
 				ram_[address] = *value;
 			}
 		} else {
@@ -492,6 +498,9 @@ public:
 								*value &= roms_[int(ROM::BASIC)][address & 16383];
 							}
 						} else if(rom_write_masks_[active_rom_]) {
+#ifdef CLK_HEADLESS
+							if(swram_write_hook) swram_write_hook(uint8_t(active_rom_), address, *value);
+#endif
 							roms_[active_rom_][address & 16383] = *value;
 						}
 					}
@@ -500,6 +509,16 @@ public:
 		}
 
 #ifdef CLK_HEADLESS
+		if(opcode_hook && operation == CPU::MOS6502::BusOperation::ReadOpcode) {
+			opcode_hook(address, uint8_t(active_rom_), uint8_t(m6502_.value_of(CPU::MOS6502::Register::StackPointer)));
+		}
+		if(os_trap && operation == CPU::MOS6502::BusOperation::ReadOpcode && address >= 0xff00) {
+			if(os_trap(address, uint8_t(m6502_.value_of(CPU::MOS6502::Register::A)),
+					uint8_t(m6502_.value_of(CPU::MOS6502::Register::X)),
+					uint8_t(m6502_.value_of(CPU::MOS6502::Register::Y)))) {
+				*value = 0x60;	// RTS: the call served by the host
+			}
+		}
 		if(address >= 0x8000 && address < 0xc000) {
 			if(video_.v_count_ >= count_from_line) ++paged_accesses_late; else ++paged_accesses_early;
 		}
@@ -780,6 +799,11 @@ private:
 	VideoOutput video_;
 #ifdef CLK_HEADLESS
 	long paged_accesses_early = 0, paged_accesses_late = 0;	// &8000-&BFFF bus cycles, by line
+	std::function<bool(uint16_t, uint8_t, uint8_t, uint8_t)> os_trap;	// an opcode fetch at &FFxx (PC, A, X, Y): true = served by the host (RTS)
+	std::function<void(uint16_t, uint8_t, uint8_t)> opcode_hook;		// every opcode fetch: PC, paged slot, S
+	std::function<void(uint8_t, uint16_t, uint8_t)> swram_write_hook;	// a store into sideways RAM: slot, address, value
+	std::function<void(uint16_t, bool, bool, int)> ram_access_hook;		// every main-RAM bus cycle: address, write, opcode fetch, its cycles
+	std::function<void(uint16_t, uint8_t)> ram_write_hook;			// a store into main RAM: address, value
 	int count_from_line = 200;
 #endif
 

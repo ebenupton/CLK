@@ -151,6 +151,14 @@ uint8_t VideoOutput::perform(const int h_count, const int v_count) {
 		const int slot = h_count >> 3;
 		capture->mode[v_count][slot] = uint8_t(mode_);
 		capture->addr[v_count][slot] = 0xffff;
+		if(output_ == OutputStage::Pixels && mode_40_) {
+			const uint16_t pa = uint16_t(byte_addr_ | char_row_);
+			if(ram_[pa]) {
+				if(!capture->padl[v_count] && !capture->padr[v_count]) { capture->pad_h[v_count] = uint16_t(h_count); capture->pad_a[v_count] = pa; capture->pad_d[v_count] = ram_[pa]; }
+				uint8_t &n = (h_count < 320) ? capture->padl[v_count] : capture->padr[v_count];
+				if(n < 255) n++;
+			}
+		}
 		if(output_ != OutputStage::Pixels || (mode_40_ && !(h_count & 8))) {
 			for(int i = 0; i < 8; i++) capture->pix[v_count][h_count + i] = 0;
 		}
@@ -227,7 +235,7 @@ uint8_t VideoOutput::perform(const int h_count, const int v_count) {
 	if(h_count < h_active) {
 		if(
 			(!mode_40_ && !(h_count & 0x7)) ||
-			(mode_40_ && ((h_count & 0xf) == 0x8))
+			(mode_40_ && ((h_count & 0xf) == (real_m5_phase ? 0x0 : 0x8)))
 		) {
 			byte_addr_ += 8;
 
@@ -267,6 +275,7 @@ uint8_t VideoOutput::run_for(const Cycles cycles) {
 					capture->field = field_;
 					*completed = *capture;
 					capture->io.clear();
+					std::memset(capture->padl, 0, sizeof(capture->padl)); std::memset(capture->padr, 0, sizeof(capture->padr));
 				}
 				++fields_completed;
 				v_count_ = 0;
@@ -330,6 +339,9 @@ void VideoOutput::write(const int address, const uint8_t value) {
 				case 2:		mode_base_ = 0x3000;	break;
 				case 3:		mode_base_ = 0x4000;	break;
 				case 6:		mode_base_ = 0x6000;	break;
+				// Mode value 7 on a real (issue 6) Electron: MODE 4's display, but the address
+				// wraps to &3000 (pastraiser.com's hardware notes) (elk-headless).
+				case 7:		mode_base_ = real_m5_phase ? 0x3000 : 0x5800;	break;
 				default:	mode_base_ = 0x5800;	break;
 			}
 
